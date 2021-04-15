@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question
+    url: https://discuss.elastic.co/c/logstash
+    about: Ask (and answer) questions here.
+  - name: Security Vulnerability
+    url: https://www.elastic.co/community/security
+    about: Send security vulnerability reports to security@elastic.co.
+  - name: Logstash Issue
+    url: https://github.com/elastic/logstash
+    about: If your issue has to do with the core of Logstash and not a specific plugin, please file it in the appropriate repository. 

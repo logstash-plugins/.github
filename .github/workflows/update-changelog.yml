@@ -1,0 +1,53 @@
+name: Update Changelog
+
+on:
+  workflow_call:
+    secrets:
+      token:
+        description: 'GitHub token with repository write access'
+        required: true
+
+jobs:
+  update-changelog:
+    name: Update CHANGELOG.md
+    runs-on: ubuntu-latest
+    
+    # Only run when a valid changelog action label is added
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      contains(fromJSON('["release:major", "release:minor", "release:patch", "changelog:add"]'), github.event.label.name)
+    
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.token }}
+          fetch-depth: 0
+      
+      - name: Checkout central config repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          path: .central-config
+          sparse-checkout: .updatecli
+          token: ${{ secrets.token }}
+      
+      - name: Run Updatecli
+        uses: elastic/oblt-actions/updatecli/run@v1
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TARGET_REPOSITORY: ${{ github.event.repository.name }}
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERSION_BUMP: ${{ github.event.label.name }}
+        with:
+          command: apply --config .central-config/.updatecli/changelog-update.yml --debug

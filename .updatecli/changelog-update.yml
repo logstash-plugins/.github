@@ -99,3 +99,16 @@ targets:
       command: |
         sed -i '2i\  - {{ requiredEnv "PR_TITLE" }} [#{{ requiredEnv "PR_NUMBER" }}](https://github.com/{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}/{{ requiredEnv "TARGET_REPOSITORY" }}/pull/{{ requiredEnv "PR_NUMBER" }})' CHANGELOG.md
         echo "message appended to Changelog"
+
+
+  updateProjectVersion:
+    name: Update project version file
+    kind: shell
+    scmid: default
+    conditionids:
+      - isNewVersion
+    spec:
+      command: |
+        VERSION_FILE=$([ -f version ] && echo "version" || echo "VERSION")
+        sed -i 's/[0-9]\+\.[0-9]\+\.[0-9]\+/{{ source "version" }}/' "$VERSION_FILE"
+        echo "Updated ${VERSION_FILE} to {{ source "version" }}"

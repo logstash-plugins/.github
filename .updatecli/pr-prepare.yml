@@ -1,6 +1,6 @@
 ---
-name: Update Changelog in Logstash plugins
-pipelineid: changelog-update
+name: "Prepare PR: update changelog and plugin version"
+pipelineid: pr-prepare
 
 scms:
   default:

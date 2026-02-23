@@ -1,4 +1,4 @@
-name: Changelog Management
+name: Prepare PR
 
 on:
   workflow_call:
@@ -28,8 +28,8 @@ jobs:
           | \`release:patch\` | Bump patch version and update changelog |
           | \`changelog:add\` | Add changelog entry without version bump |"
 
-  update-changelog:
-    name: Update CHANGELOG.md
+  prepare-pr:
+    name: Update changelog and version
     runs-on: ubuntu-latest
     
     if: |
@@ -69,4 +69,4 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           VERSION_BUMP: ${{ github.event.label.name }}
         with:
-          command: apply --config .central-config/.updatecli/changelog-update.yml
+          command: apply --config .central-config/.updatecli/pr-prepare.yml

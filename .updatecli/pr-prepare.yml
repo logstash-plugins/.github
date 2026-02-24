@@ -1,0 +1,107 @@
+---
+name: "Prepare PR: update changelog and plugin version"
+pipelineid: pr-prepare
+
+scms:
+  default:
+    kind: github
+    spec:
+      user: 'github-actions[bot]'
+      username: 'github-actions[bot]'
+      email: '41898282+github-actions[bot]@users.noreply.github.com'
+      owner: '{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}'
+      repository: '{{ requiredEnv "TARGET_REPOSITORY" }}'
+      token: '{{ requiredEnv "GH_TOKEN" }}'
+      branch: '{{ requiredEnv "TARGET_BRANCH" }}'
+      workingBranch: false
+      commitusingapi: true
+      force: false
+
+sources:
+  version:
+    name: Calculate version based on VERSION_BUMP
+    kind: shell
+    scmid: default
+    spec:
+      command: |
+        VERSION=$(cat version 2>/dev/null || grep -oE '[0-9]+\.[0-9]+\.[0-9]+' VERSION | head -1)
+        VERSION_BUMP="{{ requiredEnv "VERSION_BUMP" }}"
+        
+        if [ "$VERSION_BUMP" = "changelog:add" ]; then
+          echo "$VERSION"
+          exit 0
+        fi
+
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
+        
+        case "$VERSION_BUMP" in
+          release:major)
+            echo "$((MAJOR + 1)).0.0"
+            ;;
+          release:minor)
+            echo "$MAJOR.$((MINOR + 1)).0"
+            ;;
+          release:patch)
+            echo "$MAJOR.$MINOR.$((PATCH + 1))"
+            ;;
+        esac
+
+conditions:
+  isNewVersion:
+    name: Check if this is a new version (not append)
+    kind: shell
+    disablesourceinput: true
+    spec:
+      command: |
+        test "{{ requiredEnv "VERSION_BUMP" }}" != "changelog:add"
+
+  isAppend:
+    name: Check if this is append mode
+    kind: shell
+    disablesourceinput: true
+    spec:
+      command: |
+        test "{{ requiredEnv "VERSION_BUMP" }}" = "changelog:add"
+
+targets:
+  # Target for new version changelog entry
+  updateChangelogNewVersion:
+    name: Update CHANGELOG.md with new version entry
+    kind: shell
+    scmid: default
+    disablesourceinput: true
+    conditionids:
+      - isNewVersion
+    spec:
+      command: |
+        sed -i "1i## {{ source "version" }}\n  - {{ requiredEnv "PR_TITLE" }} [#{{ requiredEnv "PR_NUMBER" }}](https://github.com/{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}/{{ requiredEnv "TARGET_REPOSITORY" }}/pull/{{ requiredEnv "PR_NUMBER" }})\n" CHANGELOG.md
+        echo "Changelog updated with new version {{ source "version" }}"
+
+  # Target for version file update
+  updateProjectVersion:
+    name: Update project version file
+    kind: shell
+    scmid: default
+    disablesourceinput: true
+    conditionids:
+      - isNewVersion
+    spec:
+      command: |
+        VERSION_FILE=$([ -f version ] && echo "version" || echo "VERSION")
+        sed -i 's/[0-9]\+\.[0-9]\+\.[0-9]\+/{{ source "version" }}/' "$VERSION_FILE"
+        echo "Updated ${VERSION_FILE} to {{ source "version" }}"
+  
+  # Target for append mode (add to existing version section)
+  updateChangelogAppend:
+    name: Append entry to current version in CHANGELOG.md
+    kind: shell
+    scmid: default
+    disablesourceinput: true
+    conditionids:
+      - isAppend
+    spec:
+      command: |
+        sed -i '2i\  - {{ requiredEnv "PR_TITLE" }} [#{{ requiredEnv "PR_NUMBER" }}](https://github.com/{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}/{{ requiredEnv "TARGET_REPOSITORY" }}/pull/{{ requiredEnv "PR_NUMBER" }})' CHANGELOG.md
+        echo "message appended to Changelog"

@@ -1,0 +1,92 @@
+name: Prepare PR
+
+on:
+  workflow_call:
+    secrets:
+      token:
+        description: 'GitHub token with repository write access'
+        required: true
+
+jobs:
+  notify-labels:
+    name: Post available labels
+    runs-on: ubuntu-latest
+    if: github.event.action == 'opened'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post comment
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "The following labels are available to update the changelog and plugin version:
+
+          | Label | Description |
+          |-------|-------------|
+          | \`changelog:add\` | Add changelog entry without version bump |
+          | \`release:patch\` | Bump patch version and update changelog |
+          | \`release:minor\` | Bump minor version and update changelog |
+          | \`release:major\` | Bump major version and update changelog |(Only for PRs targeting \`main\`)"
+
+  reject-major:
+    name: Reject major bump on non-main branch
+    runs-on: ubuntu-latest
+    if: |
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'release:major' &&
+      github.event.pull_request.base.ref != 'main'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post warning comment
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "⚠️ The \`release:major\` label is only supported on PRs targeting \`main\`. Branches linked to previous Logstash releases don't expect major version bumps.
+
+          Please use \`release:minor\`, \`release:patch\`, or \`changelog:add\` instead."
+
+  prepare-pr:
+    name: Update changelog and version
+    runs-on: ubuntu-latest
+    
+    # Only run when a valid changelog action label is added
+    # release:major is restricted to PRs targeting main, branches linked to previous logstash releases don't expect major version bumps.
+    if: |
+      github.event.action == 'labeled' &&
+      contains(fromJSON('["release:major", "release:minor", "release:patch", "changelog:add"]'), github.event.label.name) &&
+      (github.event.label.name != 'release:major' || github.event.pull_request.base.ref == 'main')
+    
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.token }}
+          fetch-depth: 0
+      
+      - name: Checkout central config repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          path: .central-config
+          sparse-checkout: .updatecli
+          token: ${{ secrets.token }}
+      
+      - name: Run Updatecli
+        uses: elastic/oblt-actions/updatecli/run@v1
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TARGET_REPOSITORY: ${{ github.event.repository.name }}
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERSION_BUMP: ${{ github.event.label.name }}
+        with:
+          command: apply --config .central-config/.updatecli/pr-prepare.yml

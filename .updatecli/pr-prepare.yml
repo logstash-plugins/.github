@@ -9,7 +9,7 @@ scms:
       user: 'github-actions[bot]'
       username: 'github-actions[bot]'
       email: '41898282+github-actions[bot]@users.noreply.github.com'
-      owner: '{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}'
+      owner: '{{ requiredEnv "HEAD_REPO_OWNER" }}'
       repository: '{{ requiredEnv "TARGET_REPOSITORY" }}'
       token: '{{ requiredEnv "GH_TOKEN" }}'
       branch: '{{ requiredEnv "TARGET_BRANCH" }}'

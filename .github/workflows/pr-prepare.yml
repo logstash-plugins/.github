@@ -83,6 +83,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.token }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          HEAD_REPO_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
           TARGET_REPOSITORY: ${{ github.event.repository.name }}
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}

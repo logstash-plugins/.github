@@ -2,14 +2,10 @@ name: Prepare PR
 
 on:
   workflow_call:
-    secrets:
-      token:
-        description: 'GitHub token with repository write access'
-        required: true
 
 jobs:
-  notify-labels:
-    name: Post available labels
+  notify-instructions:
+    name: Post instructions
     runs-on: ubuntu-latest
     if: github.event.action == 'opened'
     permissions:
@@ -17,76 +13,224 @@ jobs:
     steps:
       - name: Post comment
         env:
-          GH_TOKEN: ${{ secrets.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "The following labels are available to update the changelog and plugin version:
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "### Changelog and Version Management
 
-          | Label | Description |
-          |-------|-------------|
-          | \`changelog:add\` | Add changelog entry without version bump |
-          | \`release:patch\` | Bump patch version and update changelog |
-          | \`release:minor\` | Bump minor version and update changelog |
-          | \`release:major\` | Bump major version and update changelog |(Only for PRs targeting \`main\`)"
+          Before merging, add a comment to this PR with the following format to automatically update the changelog and version:
 
-  reject-major:
-    name: Reject major bump on non-main branch
-    runs-on: ubuntu-latest
-    if: |
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'release:major' &&
-      github.event.pull_request.base.ref != 'main'
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Post warning comment
-        env:
-          GH_TOKEN: ${{ secrets.token }}
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "⚠️ The \`release:major\` label is only supported on PRs targeting \`main\`. Branches linked to previous Logstash releases don't expect major version bumps.
+          \`\`\`
+          /pr_prepare release:patch
+          - Your changelog entry here
+            - Subentry (optional)
+          \`\`\`
 
-          Please use \`release:minor\`, \`release:patch\`, or \`changelog:add\` instead."
+          **Available commands:**
+
+          | Command | Description |
+          |---------|-------------|
+          | \`/pr_prepare changelog:add\` | Add changelog entry without version bump |
+          | \`/pr_prepare release:patch\` | Bump patch version and update changelog |
+          | \`/pr_prepare release:minor\` | Bump minor version and update changelog |
+          | \`/pr_prepare release:major\` | Bump major version and update changelog (only for PRs targeting \`main\`) |
+
+          **Notes:**
+          - If no changelog entry is provided, the PR title will be used.
+          - If multiple \`/pr_prepare\` comments are added, the last one will be used.
+          - Changes are committed to the base branch after the PR is merged."
 
   prepare-pr:
     name: Update changelog and version
     runs-on: ubuntu-latest
-    
-    # Only run when a valid changelog action label is added
-    # release:major is restricted to PRs targeting main, branches linked to previous logstash releases don't expect major version bumps.
-    if: |
-      github.event.action == 'labeled' &&
-      contains(fromJSON('["release:major", "release:minor", "release:patch", "changelog:add"]'), github.event.label.name) &&
-      (github.event.label.name != 'release:major' || github.event.pull_request.base.ref == 'main')
-    
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
     permissions:
       contents: write
-      pull-requests: read
-    
     steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v6
+      - name: Find pr_prepare comment
+        id: find-comment
+        uses: actions/github-script@v9
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          token: ${{ secrets.token }}
-          fetch-depth: 0
-      
-      - name: Checkout central config repo
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          path: .central-config
-          sparse-checkout: .updatecli
-          token: ${{ secrets.token }}
-      
-      - name: Run Updatecli
-        uses: elastic/oblt-actions/updatecli/run@v1
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.payload.repository.owner.login,
+              repo: context.payload.repository.name,
+              issue_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const prPrepareComments = comments.filter(c => c.body.trim().startsWith('/pr_prepare'));
+            if (prPrepareComments.length === 0) {
+              core.info('No /pr_prepare comment found, skipping');
+              core.setOutput('found', 'false');
+              return;
+            }
+
+            const lastComment = prPrepareComments[prPrepareComments.length - 1];
+            core.setOutput('found', 'true');
+            core.setOutput('body', lastComment.body);
+
+      - name: Parse comment and fetch files
+        if: steps.find-comment.outputs.found == 'true'
+        id: prepare
+        uses: actions/github-script@v9
         env:
-          GH_TOKEN: ${{ secrets.token }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-          TARGET_REPOSITORY: ${{ github.event.repository.name }}
-          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          COMMENT_BODY: ${{ steps.find-comment.outputs.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          VERSION_BUMP: ${{ github.event.label.name }}
         with:
-          command: apply --config .central-config/.updatecli/pr-prepare.yml
+          script: |
+            const fs = require('fs');
+            const body = process.env.COMMENT_BODY;
+            const lines = body.split('\n');
+            const firstLine = lines[0].trim();
+
+            const commandMatch = firstLine.match(/^\/pr_prepare\s+(release:major|release:minor|release:patch|changelog:add)$/);
+            if (!commandMatch) {
+              throw new Error(`Invalid /pr_prepare command: ${firstLine}`);
+            }
+            const bumpType = commandMatch[1];
+
+            if (bumpType === 'release:major' && context.payload.pull_request.base.ref !== 'main') {
+              throw new Error('release:major is only supported on PRs targeting main');
+            }
+
+            const changelogLines = lines.slice(1).filter(l => l.trim().length > 0);
+            const repoOwner = context.payload.repository.owner.login;
+            const prNumber = context.payload.pull_request.number;
+            const repoName = context.payload.repository.name;
+            const prUrl = `https://github.com/logstash-plugins/${repoName}/pull/${prNumber}`;
+            const baseRef = context.payload.pull_request.base.ref;
+
+            let entry;
+            if (changelogLines.length > 0) {
+              const entryLines = [];
+              for (const line of changelogLines) {
+                if (line.match(/^- /)) {
+                  const text = line.replace(/^-\s*/, '').trim();
+                  entryLines.push(`  - ${text} [#${prNumber}](${prUrl})`);
+                } else {
+                  entryLines.push(`  ${line}`);
+                }
+              }
+              entry = entryLines.join('\n');
+            } else {
+              const prTitle = process.env.PR_TITLE;
+              const unsafeChars = prTitle.match(/[^a-zA-Z0-9 _.,:;+=#@()\-]/g);
+              if (unsafeChars) {
+                throw new Error(`PR title contains unsupported characters: ${[...new Set(unsafeChars)].join(' ')}`);
+              }
+              entry = `  - ${prTitle} [#${prNumber}](${prUrl})`;
+            }
+
+            for (const path of ['version', 'VERSION']) {
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  owner: repoOwner, repo: repoName, path, ref: baseRef
+                });
+                fs.writeFileSync('version-content', Buffer.from(data.content, 'base64').toString('utf8'));
+                fs.writeFileSync('version-path', path);
+                break;
+              } catch (e) {
+                if (path === 'VERSION') throw new Error('No version file found');
+              }
+            }
+
+            const { data: changelogFile } = await github.rest.repos.getContent({
+              owner: repoOwner, repo: repoName, path: 'CHANGELOG.md', ref: baseRef
+            });
+            fs.writeFileSync('changelog-content', Buffer.from(changelogFile.content, 'base64').toString('utf8'));
+
+            const versionContent = fs.readFileSync('version-content', 'utf8');
+            const match = versionContent.match(/(\d+)\.(\d+)\.(\d+)/);
+            if (!match) throw new Error('Could not parse version number');
+            let [, major, minor, patch] = match;
+            major = parseInt(major); minor = parseInt(minor); patch = parseInt(patch);
+
+            let newVersion;
+            switch (bumpType) {
+              case 'release:major': newVersion = `${major + 1}.0.0`; break;
+              case 'release:minor': newVersion = `${major}.${minor + 1}.0`; break;
+              case 'release:patch': newVersion = `${major}.${minor}.${patch + 1}`; break;
+            }
+
+            const changelog = fs.readFileSync('changelog-content', 'utf8');
+            let newChangelog;
+            if (bumpType === 'changelog:add') {
+              const clLines = changelog.split('\n');
+              clLines.splice(1, 0, entry);
+              newChangelog = clLines.join('\n');
+            } else {
+              newChangelog = `## ${newVersion}\n${entry}\n\n${changelog}`;
+            }
+
+            fs.writeFileSync('new-changelog', newChangelog);
+            if (bumpType !== 'changelog:add') {
+              fs.writeFileSync('new-version-content', versionContent.replace(/\d+\.\d+\.\d+/, newVersion));
+            }
+            fs.writeFileSync('commit-message', bumpType === 'changelog:add'
+              ? 'Add changelog entry'
+              : `Update changelog and bump version to ${newVersion}`);
+
+      - name: Commit changes
+        if: steps.find-comment.outputs.found == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const repoOwner = context.payload.repository.owner.login;
+            const repoName = context.payload.repository.name;
+            const baseRef = context.payload.pull_request.base.ref;
+            const message = fs.readFileSync('commit-message', 'utf8').trim();
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: repoOwner, repo: repoName, ref: `heads/${baseRef}`
+            });
+            const baseSha = ref.object.sha;
+
+            const { data: baseCommit } = await github.rest.git.getCommit({
+              owner: repoOwner, repo: repoName, commit_sha: baseSha
+            });
+
+            const newChangelog = fs.readFileSync('new-changelog', 'utf8');
+            const { data: changelogBlob } = await github.rest.git.createBlob({
+              owner: repoOwner, repo: repoName, content: newChangelog, encoding: 'utf-8'
+            });
+
+            const tree = [{
+              path: 'CHANGELOG.md', mode: '100644', type: 'blob', sha: changelogBlob.sha
+            }];
+
+            if (fs.existsSync('new-version-content')) {
+              const newVersionContent = fs.readFileSync('new-version-content', 'utf8');
+              const versionPath = fs.readFileSync('version-path', 'utf8').trim();
+              const { data: versionBlob } = await github.rest.git.createBlob({
+                owner: repoOwner, repo: repoName, content: newVersionContent, encoding: 'utf-8'
+              });
+              tree.push({
+                path: versionPath, mode: '100644', type: 'blob', sha: versionBlob.sha
+              });
+            }
+
+            const { data: newTree } = await github.rest.git.createTree({
+              owner: repoOwner, repo: repoName, base_tree: baseCommit.tree.sha, tree
+            });
+
+            const { data: newCommit } = await github.rest.git.createCommit({
+              owner: repoOwner, repo: repoName,
+              message,
+              tree: newTree.sha,
+              parents: [baseSha],
+              author: {
+                name: 'github-actions[bot]',
+                email: '41898282+github-actions[bot]@users.noreply.github.com'
+              },
+              committer: {
+                name: 'github-actions[bot]',
+                email: '41898282+github-actions[bot]@users.noreply.github.com'
+              }
+            });
+
+            await github.rest.git.updateRef({
+              owner: repoOwner, repo: repoName, ref: `heads/${baseRef}`, sha: newCommit.sha
+            });
+
+            core.info(`${message} (${newCommit.sha.substring(0, 7)})`);

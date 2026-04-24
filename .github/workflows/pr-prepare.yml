@@ -35,7 +35,7 @@ jobs:
           | \`/pr_prepare release:major\` | Bump major version and update changelog (only for PRs targeting \`main\`) |
 
           **Notes:**
-          - If no changelog entry is provided, the PR title will be used.
+          - If no changelog entry is provided, the PR title will be used. Only alphanumeric characters, spaces, and common punctuation are allowed.
           - If multiple \`/pr_prepare\` comments are added, the last one will be used.
           - Changes are committed to the base branch after the PR is merged."
 
@@ -45,6 +45,7 @@ jobs:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
     permissions:
       contents: write
+    # Flow: find command comment → parse it → build changelog entry → fetch files → compute updates → commit
     steps:
       - name: Find pr_prepare comment
         id: find-comment
@@ -52,7 +53,7 @@ jobs:
         with:
           script: |
             const { data: comments } = await github.rest.issues.listComments({
-              owner: context.payload.repository.owner.login,
+              owner: 'logstash-plugins',
               repo: context.payload.repository.name,
               issue_number: context.payload.pull_request.number,
               per_page: 100
@@ -69,48 +70,53 @@ jobs:
             core.setOutput('found', 'true');
             core.setOutput('body', lastComment.body);
 
-      - name: Parse comment and fetch files
+      - name: Parse command
         if: steps.find-comment.outputs.found == 'true'
-        id: prepare
+        id: parse-command
+        uses: actions/github-script@v9
+        env:
+          COMMENT_BODY: ${{ steps.find-comment.outputs.body }}
+        with:
+          script: |
+            const body = process.env.COMMENT_BODY;
+            const firstLine = body.split('\n')[0].trim();
+
+            const commandMatch = firstLine.match(/^\/pr_prepare\s+(release:major|release:minor|release:patch|changelog:add)$/);
+            if (!commandMatch) {
+              throw new Error(`Invalid /pr_prepare command: ${firstLine}`);
+            }
+
+            const command = commandMatch[1];
+            if (command === 'release:major' && context.payload.pull_request.base.ref !== 'main') {
+              throw new Error('release:major is only supported on PRs targeting main');
+            }
+
+            core.setOutput('command', command);
+
+      - name: Build changelog entry
+        if: steps.find-comment.outputs.found == 'true'
+        id: build-entry
         uses: actions/github-script@v9
         env:
           COMMENT_BODY: ${{ steps.find-comment.outputs.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         with:
           script: |
-            const fs = require('fs');
             const body = process.env.COMMENT_BODY;
-            const lines = body.split('\n');
-            const firstLine = lines[0].trim();
-
-            const commandMatch = firstLine.match(/^\/pr_prepare\s+(release:major|release:minor|release:patch|changelog:add)$/);
-            if (!commandMatch) {
-              throw new Error(`Invalid /pr_prepare command: ${firstLine}`);
-            }
-            const bumpType = commandMatch[1];
-
-            if (bumpType === 'release:major' && context.payload.pull_request.base.ref !== 'main') {
-              throw new Error('release:major is only supported on PRs targeting main');
-            }
-
-            const changelogLines = lines.slice(1).filter(l => l.trim().length > 0);
-            const repoOwner = context.payload.repository.owner.login;
+            const lines = body.split('\n').slice(1).filter(l => l.trim().length > 0);
             const prNumber = context.payload.pull_request.number;
             const repoName = context.payload.repository.name;
             const prUrl = `https://github.com/logstash-plugins/${repoName}/pull/${prNumber}`;
-            const baseRef = context.payload.pull_request.base.ref;
 
             let entry;
-            if (changelogLines.length > 0) {
-              const entryLines = [];
-              for (const line of changelogLines) {
+            if (lines.length > 0) {
+              const entryLines = lines.map(line => {
                 if (line.match(/^- /)) {
                   const text = line.replace(/^-\s*/, '').trim();
-                  entryLines.push(`  - ${text} [#${prNumber}](${prUrl})`);
-                } else {
-                  entryLines.push(`  ${line}`);
+                  return `  - ${text} [#${prNumber}](${prUrl})`;
                 }
-              }
+                return `  ${line}`;
+              });
               entry = entryLines.join('\n');
             } else {
               const prTitle = process.env.PR_TITLE;
@@ -121,13 +127,23 @@ jobs:
               entry = `  - ${prTitle} [#${prNumber}](${prUrl})`;
             }
 
+            core.setOutput('entry', entry);
+
+      - name: Fetch version and changelog files
+        if: steps.find-comment.outputs.found == 'true'
+        id: fetch-files
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const repo = context.payload.repository.name;
+            const ref = context.payload.pull_request.base.ref;
+
             for (const path of ['version', 'VERSION']) {
               try {
-                const { data } = await github.rest.repos.getContent({
-                  owner: repoOwner, repo: repoName, path, ref: baseRef
-                });
+                const { data } = await github.rest.repos.getContent({ owner: 'logstash-plugins', repo, path, ref });
                 fs.writeFileSync('version-content', Buffer.from(data.content, 'base64').toString('utf8'));
-                fs.writeFileSync('version-path', path);
+                core.setOutput('version-path', path);
                 break;
               } catch (e) {
                 if (path === 'VERSION') throw new Error('No version file found');
@@ -135,18 +151,30 @@ jobs:
             }
 
             const { data: changelogFile } = await github.rest.repos.getContent({
-              owner: repoOwner, repo: repoName, path: 'CHANGELOG.md', ref: baseRef
+              owner: 'logstash-plugins', repo, path: 'CHANGELOG.md', ref
             });
             fs.writeFileSync('changelog-content', Buffer.from(changelogFile.content, 'base64').toString('utf8'));
+
+      - name: Compute new version and changelog
+        if: steps.find-comment.outputs.found == 'true'
+        id: compute
+        uses: actions/github-script@v9
+        env:
+          COMMAND: ${{ steps.parse-command.outputs.command }}
+          ENTRY: ${{ steps.build-entry.outputs.entry }}
+        with:
+          script: |
+            const fs = require('fs');
+            const command = process.env.COMMAND;
+            const entry = process.env.ENTRY;
 
             const versionContent = fs.readFileSync('version-content', 'utf8');
             const match = versionContent.match(/(\d+)\.(\d+)\.(\d+)/);
             if (!match) throw new Error('Could not parse version number');
-            let [, major, minor, patch] = match;
-            major = parseInt(major); minor = parseInt(minor); patch = parseInt(patch);
+            let [, major, minor, patch] = match.map(Number);
 
             let newVersion;
-            switch (bumpType) {
+            switch (command) {
               case 'release:major': newVersion = `${major + 1}.0.0`; break;
               case 'release:minor': newVersion = `${major}.${minor + 1}.0`; break;
               case 'release:patch': newVersion = `${major}.${minor}.${patch + 1}`; break;
@@ -154,45 +182,36 @@ jobs:
 
             const changelog = fs.readFileSync('changelog-content', 'utf8');
             let newChangelog;
-            if (bumpType === 'changelog:add') {
-              const clLines = changelog.split('\n');
-              clLines.splice(1, 0, entry);
-              newChangelog = clLines.join('\n');
+            if (command === 'changelog:add') {
+              const lines = changelog.split('\n');
+              lines.splice(1, 0, entry);
+              newChangelog = lines.join('\n');
             } else {
               newChangelog = `## ${newVersion}\n${entry}\n\n${changelog}`;
             }
 
             fs.writeFileSync('new-changelog', newChangelog);
-            if (bumpType !== 'changelog:add') {
+            if (command !== 'changelog:add') {
               fs.writeFileSync('new-version-content', versionContent.replace(/\d+\.\d+\.\d+/, newVersion));
             }
-            fs.writeFileSync('commit-message', bumpType === 'changelog:add'
-              ? 'Add changelog entry'
-              : `Update changelog and bump version to ${newVersion}`);
 
-      - name: Commit changes
+            const commitMessage = command === 'changelog:add'
+              ? 'Add changelog entry'
+              : `Update changelog and bump version to ${newVersion}`;
+            fs.writeFileSync('commit-message', commitMessage);
+
+      - name: Create file blobs
         if: steps.find-comment.outputs.found == 'true'
+        id: create-blobs
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const repoOwner = context.payload.repository.owner.login;
-            const repoName = context.payload.repository.name;
-            const baseRef = context.payload.pull_request.base.ref;
-            const message = fs.readFileSync('commit-message', 'utf8').trim();
-
-            const { data: ref } = await github.rest.git.getRef({
-              owner: repoOwner, repo: repoName, ref: `heads/${baseRef}`
-            });
-            const baseSha = ref.object.sha;
-
-            const { data: baseCommit } = await github.rest.git.getCommit({
-              owner: repoOwner, repo: repoName, commit_sha: baseSha
-            });
+            const repo = context.payload.repository.name;
 
             const newChangelog = fs.readFileSync('new-changelog', 'utf8');
             const { data: changelogBlob } = await github.rest.git.createBlob({
-              owner: repoOwner, repo: repoName, content: newChangelog, encoding: 'utf-8'
+              owner: 'logstash-plugins', repo, content: newChangelog, encoding: 'utf-8'
             });
 
             const tree = [{
@@ -201,22 +220,43 @@ jobs:
 
             if (fs.existsSync('new-version-content')) {
               const newVersionContent = fs.readFileSync('new-version-content', 'utf8');
-              const versionPath = fs.readFileSync('version-path', 'utf8').trim();
+              const versionPath = '${{ steps.fetch-files.outputs.version-path }}';
               const { data: versionBlob } = await github.rest.git.createBlob({
-                owner: repoOwner, repo: repoName, content: newVersionContent, encoding: 'utf-8'
+                owner: 'logstash-plugins', repo, content: newVersionContent, encoding: 'utf-8'
               });
               tree.push({
                 path: versionPath, mode: '100644', type: 'blob', sha: versionBlob.sha
               });
             }
 
+            core.setOutput('tree', JSON.stringify(tree));
+
+      - name: Commit and push
+        if: steps.find-comment.outputs.found == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const repo = context.payload.repository.name;
+            const baseRef = context.payload.pull_request.base.ref;
+            const message = fs.readFileSync('commit-message', 'utf8').trim();
+            const tree = JSON.parse('${{ steps.create-blobs.outputs.tree }}');
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: 'logstash-plugins', repo, ref: `heads/${baseRef}`
+            });
+            const baseSha = ref.object.sha;
+
+            const { data: baseCommit } = await github.rest.git.getCommit({
+              owner: 'logstash-plugins', repo, commit_sha: baseSha
+            });
+
             const { data: newTree } = await github.rest.git.createTree({
-              owner: repoOwner, repo: repoName, base_tree: baseCommit.tree.sha, tree
+              owner: 'logstash-plugins', repo, base_tree: baseCommit.tree.sha, tree
             });
 
             const { data: newCommit } = await github.rest.git.createCommit({
-              owner: repoOwner, repo: repoName,
-              message,
+              owner: 'logstash-plugins', repo, message,
               tree: newTree.sha,
               parents: [baseSha],
               author: {
@@ -230,7 +270,7 @@ jobs:
             });
 
             await github.rest.git.updateRef({
-              owner: repoOwner, repo: repoName, ref: `heads/${baseRef}`, sha: newCommit.sha
+              owner: 'logstash-plugins', repo, ref: `heads/${baseRef}`, sha: newCommit.sha
             });
 
             core.info(`${message} (${newCommit.sha.substring(0, 7)})`);

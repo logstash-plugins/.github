@@ -252,12 +252,16 @@ jobs:
               owner: context.payload.repository.owner.login, repo, commit_sha: baseSha
             });
 
+            // Include the original commit message in the new commit to provide more context in the history.
+            const prevMessage = baseCommit.message.split('\n')[0];
+            const fullMessage = `${message} for '${prevMessage}'`;
+
             const { data: newTree } = await github.rest.git.createTree({
               owner: context.payload.repository.owner.login, repo, base_tree: baseCommit.tree.sha, tree
             });
 
             const { data: newCommit } = await github.rest.git.createCommit({
-              owner: context.payload.repository.owner.login, repo, message,
+              owner: context.payload.repository.owner.login, repo, message: fullMessage,
               tree: newTree.sha,
               parents: [baseSha],
               author: {
@@ -274,4 +278,4 @@ jobs:
               owner: context.payload.repository.owner.login, repo, ref: `heads/${baseRef}`, sha: newCommit.sha
             });
 
-            core.info(`${message} (${newCommit.sha.substring(0, 7)})`);
+            core.info(`${fullMessage} (${newCommit.sha.substring(0, 7)})`);

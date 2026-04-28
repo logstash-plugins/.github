@@ -52,8 +52,9 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.payload.repository.owner.login,
+            const owner = context.payload.repository.owner.login;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
               repo: context.payload.repository.name,
               issue_number: context.payload.pull_request.number,
               per_page: 100
@@ -137,12 +138,13 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const owner = context.payload.repository.owner.login;
             const repo = context.payload.repository.name;
             const ref = context.payload.pull_request.base.ref;
 
             for (const path of ['version', 'VERSION']) {
               try {
-                const { data } = await github.rest.repos.getContent({ owner: context.payload.repository.owner.login, repo, path, ref });
+                const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
                 fs.writeFileSync('version-content', Buffer.from(data.content, 'base64').toString('utf8'));
                 core.setOutput('version-path', path);
                 break;
@@ -152,7 +154,7 @@ jobs:
             }
 
             const { data: changelogFile } = await github.rest.repos.getContent({
-              owner: context.payload.repository.owner.login, repo, path: 'CHANGELOG.md', ref
+              owner, repo, path: 'CHANGELOG.md', ref
             });
             fs.writeFileSync('changelog-content', Buffer.from(changelogFile.content, 'base64').toString('utf8'));
 
@@ -169,37 +171,33 @@ jobs:
             const command = process.env.COMMAND;
             const entry = process.env.ENTRY;
 
-            const versionContent = fs.readFileSync('version-content', 'utf8');
-            const match = versionContent.match(/(\d+)\.(\d+)\.(\d+)/);
-            if (!match) throw new Error('Could not parse version number');
-            let [, major, minor, patch] = match.map(Number);
-
-            let newVersion;
-            switch (command) {
-              case 'release:major': newVersion = `${major + 1}.0.0`; break;
-              case 'release:minor': newVersion = `${major}.${minor + 1}.0`; break;
-              case 'release:patch': newVersion = `${major}.${minor}.${patch + 1}`; break;
-            }
-
             const changelog = fs.readFileSync('changelog-content', 'utf8');
             let newChangelog;
+
             if (command === 'changelog:add') {
               const lines = changelog.split('\n');
               lines.splice(1, 0, entry);
               newChangelog = lines.join('\n');
+              fs.writeFileSync('new-changelog', newChangelog);
+              fs.writeFileSync('commit-message', 'chore: Add changelog entry');
             } else {
+              const versionContent = fs.readFileSync('version-content', 'utf8');
+              const match = versionContent.match(/(\d+)\.(\d+)\.(\d+)/);
+              if (!match) throw new Error('Could not parse version number');
+              let [, major, minor, patch] = match.map(Number);
+
+              let newVersion;
+              switch (command) {
+                case 'release:major': newVersion = `${major + 1}.0.0`; break;
+                case 'release:minor': newVersion = `${major}.${minor + 1}.0`; break;
+                case 'release:patch': newVersion = `${major}.${minor}.${patch + 1}`; break;
+              }
+
               newChangelog = `## ${newVersion}\n${entry}\n\n${changelog}`;
-            }
-
-            fs.writeFileSync('new-changelog', newChangelog);
-            if (command !== 'changelog:add') {
+              fs.writeFileSync('new-changelog', newChangelog);
               fs.writeFileSync('new-version-content', versionContent.replace(/\d+\.\d+\.\d+/, newVersion));
+              fs.writeFileSync('commit-message', `chore: Update changelog and bump version to ${newVersion}`);
             }
-
-            const commitMessage = command === 'changelog:add'
-              ? 'Add changelog entry'
-              : `Update changelog and bump version to ${newVersion}`;
-            fs.writeFileSync('commit-message', commitMessage);
 
       - name: Create file blobs
         if: steps.find-comment.outputs.found == 'true'
@@ -208,11 +206,12 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const owner = context.payload.repository.owner.login;
             const repo = context.payload.repository.name;
 
             const newChangelog = fs.readFileSync('new-changelog', 'utf8');
             const { data: changelogBlob } = await github.rest.git.createBlob({
-              owner: context.payload.repository.owner.login, repo, content: newChangelog, encoding: 'utf-8'
+              owner, repo, content: newChangelog, encoding: 'utf-8'
             });
 
             const tree = [{
@@ -223,7 +222,7 @@ jobs:
               const newVersionContent = fs.readFileSync('new-version-content', 'utf8');
               const versionPath = '${{ steps.fetch-files.outputs.version-path }}';
               const { data: versionBlob } = await github.rest.git.createBlob({
-                owner: context.payload.repository.owner.login, repo, content: newVersionContent, encoding: 'utf-8'
+                owner, repo, content: newVersionContent, encoding: 'utf-8'
               });
               tree.push({
                 path: versionPath, mode: '100644', type: 'blob', sha: versionBlob.sha
@@ -238,18 +237,19 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const owner = context.payload.repository.owner.login;
             const repo = context.payload.repository.name;
             const baseRef = context.payload.pull_request.base.ref;
             const message = fs.readFileSync('commit-message', 'utf8').trim();
             const tree = JSON.parse('${{ steps.create-blobs.outputs.tree }}');
 
             const { data: ref } = await github.rest.git.getRef({
-              owner: context.payload.repository.owner.login, repo, ref: `heads/${baseRef}`
+              owner, repo, ref: `heads/${baseRef}`
             });
             const baseSha = ref.object.sha;
 
             const { data: baseCommit } = await github.rest.git.getCommit({
-              owner: context.payload.repository.owner.login, repo, commit_sha: baseSha
+              owner, repo, commit_sha: baseSha
             });
 
             // Include the original commit message in the new commit to provide more context in the history.
@@ -257,11 +257,11 @@ jobs:
             const fullMessage = `${message} for '${prevMessage}'`;
 
             const { data: newTree } = await github.rest.git.createTree({
-              owner: context.payload.repository.owner.login, repo, base_tree: baseCommit.tree.sha, tree
+              owner, repo, base_tree: baseCommit.tree.sha, tree
             });
 
             const { data: newCommit } = await github.rest.git.createCommit({
-              owner: context.payload.repository.owner.login, repo, message: fullMessage,
+              owner, repo, message: fullMessage,
               tree: newTree.sha,
               parents: [baseSha],
               author: {
@@ -275,7 +275,7 @@ jobs:
             });
 
             await github.rest.git.updateRef({
-              owner: context.payload.repository.owner.login, repo, ref: `heads/${baseRef}`, sha: newCommit.sha
+              owner, repo, ref: `heads/${baseRef}`, sha: newCommit.sha
             });
 
             core.info(`${fullMessage} (${newCommit.sha.substring(0, 7)})`);

@@ -12,6 +12,13 @@ on:
       changelog_entry:
         type: string
         description: 'Custom changelog entry (defaults to PR title if omitted)'
+    secrets:
+      CLIENT_ID:
+        required: false
+        description: 'GitHub App Client ID for automated commits'
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key PEM for automated commits'
 
 jobs:
   notify-instructions:
@@ -72,8 +79,18 @@ jobs:
       (github.event.action == 'closed' && github.event.pull_request.merged == true) || inputs.pr_number
     permissions:
       contents: write
+    env:
+      USE_APP_TOKEN: ${{ secrets.CLIENT_ID != '' }}
     # Flow: resolve inputs (from comment or dispatch) → fetch files → compute updates → commit
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.USE_APP_TOKEN == 'true'
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Resolve inputs
         id: resolve
         uses: actions/github-script@v9
@@ -82,6 +99,7 @@ jobs:
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
           INPUT_CHANGELOG_ENTRY: ${{ inputs.changelog_entry }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const owner = context.payload.repository.owner.login;
             const repo = context.payload.repository.name;
@@ -205,6 +223,7 @@ jobs:
           BASE_REF: ${{ steps.resolve.outputs.base-ref }}
           COMMAND: ${{ steps.resolve.outputs.command }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const fs = require('fs');
             const owner = context.payload.repository.owner.login;
@@ -288,6 +307,7 @@ jobs:
         env:
           VERSION_PATH: ${{ steps.fetch-files.outputs.version-path }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const fs = require('fs');
             const owner = context.payload.repository.owner.login;
@@ -321,6 +341,7 @@ jobs:
           BASE_REF: ${{ steps.resolve.outputs.base-ref }}
           TREE_JSON: ${{ steps.create-blobs.outputs.tree }}
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const fs = require('fs');
             const owner = context.payload.repository.owner.login;

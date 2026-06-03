@@ -131,14 +131,22 @@ jobs:
                 owner, repo, issue_number: prNumber, per_page: 100
               });
 
-              // Only consider comments from collaborators, members or the PR author to avoid picking up irrelevant comments.
-              const allowedAssociations = ['COLLABORATOR', 'MEMBER', 'OWNER'];
+              // Only consider comments from users with write or admin access or the PR author.
               const prAuthor = context.payload.pull_request.user.login;
-
-              const prPrepareComments = comments.filter(c =>
-                c.body.trim().startsWith('/pr_prepare') &&
-                (allowedAssociations.includes(c.author_association) || c.user.login === prAuthor)
-              );
+              const candidateComments = comments.filter(c => c.body.trim().startsWith('/pr_prepare'));
+              const prPrepareComments = [];
+              for (const c of candidateComments) {
+                if (c.user.login === prAuthor) {
+                  prPrepareComments.push(c);
+                  continue;
+                }
+                const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner, repo, username: c.user.login
+                });
+                if (['admin', 'write'].includes(perm.permission)) {
+                  prPrepareComments.push(c);
+                }
+              }
               if (prPrepareComments.length === 0) {
                 core.info('No /pr_prepare comment found, skipping');
                 core.setOutput('found', 'false');

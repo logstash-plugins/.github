@@ -102,11 +102,13 @@ jobs:
                 throw new Error(`PR #${pr.number} is not merged`);
               }
 
-              prNumber = pr.number;
+              prNumber = inputPrNumber;
               prTitle = pr.title;
               baseRef = pr.base.ref;
               command = inputCommand;
-              rawEntryText = inputEntry;
+              rawEntryText = inputEntry && !inputEntry.startsWith('- ')
+                ? `- ${inputEntry}`
+                : inputEntry;
 
               const validCommands = ['release:major', 'release:minor', 'release:patch', 'changelog:add'];
               if (!validCommands.includes(command)) {

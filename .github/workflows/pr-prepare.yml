@@ -102,11 +102,14 @@ jobs:
                 throw new Error(`PR #${pr.number} is not merged`);
               }
 
-              prNumber = pr.number;
+              prNumber = parseInt(inputPrNumber);
               prTitle = pr.title;
               baseRef = pr.base.ref;
               command = inputCommand;
-              rawEntryText = inputEntry;
+              const trimmed = inputEntry ? inputEntry.trim() : inputEntry;
+              rawEntryText = trimmed && !trimmed.startsWith('- ')
+                ? `- ${trimmed}`
+                : trimmed;
 
               const validCommands = ['release:major', 'release:minor', 'release:patch', 'changelog:add'];
               if (!validCommands.includes(command)) {
@@ -182,7 +185,7 @@ jobs:
               });
               entry = formatted.join('\n');
             } else {
-              const unsafeChars = prTitle.match(/[^a-zA-Z0-9 _.,:;+=#@()\-]/g);
+              const unsafeChars = prTitle.match(/[^a-zA-Z0-9 _.,:;+=#@()\-`'!?&~]/g);
               if (unsafeChars) {
                 throw new Error(`PR title contains unsupported characters: ${[...new Set(unsafeChars)].join(' ')}`);
               }
@@ -252,6 +255,9 @@ jobs:
 
             if (command === 'changelog:add') {
               const lines = changelog.split('\n');
+              if (!lines[0].startsWith('## ')) {
+                throw new Error('Unexpected CHANGELOG.md format: expected first line to be a version header (e.g. `## x.y.z` or `## Unreleased`)');  
+              }
               lines.splice(1, 0, entry);
               newChangelog = lines.join('\n');
               fs.writeFileSync('new-changelog', newChangelog);

@@ -81,7 +81,7 @@ jobs:
       contents: write
     env:
       USE_APP_TOKEN: ${{ secrets.CLIENT_ID != '' }}
-    # Flow: resolve inputs (from comment or dispatch) → fetch files → compute updates → commit
+    # Flow: generate app token → resolve inputs (from comment or dispatch) → fetch files → compute updates → commit
     steps:
       - name: Generate GitHub App token
         id: app-token

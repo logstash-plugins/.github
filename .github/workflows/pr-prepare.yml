@@ -103,7 +103,8 @@ jobs:
           script: |
             const owner = context.payload.repository.owner.login;
             const repo = context.payload.repository.name;
-            const inputCommand = process.env.INPUT_COMMAND;
+            // strip all whitespace — the format is `release:<something>` with no spaces anywhere
+            const inputCommand = (process.env.INPUT_COMMAND || '').replace(/\s+/g, '');
             const inputPrNumber = process.env.INPUT_PR_NUMBER;
             const inputEntry = process.env.INPUT_CHANGELOG_ENTRY;
 
